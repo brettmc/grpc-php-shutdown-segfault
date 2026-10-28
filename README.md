@@ -24,12 +24,16 @@ workflow runs it 20 times in each combination of:
 - PHP: 8.4 and 8.5
 - unload: PHP's default, and `ZEND_DONT_UNLOAD_MODULES=1`, which skips `dlclose()`
 
-The Versions step shows where `grpc.so` came from: its package, the compiler that built it, and
-whether it was linked with `-z nodelete`.
+setup-php does not install ext-grpc from a package or from PECL on a hosted runner. It unpacks a
+prebuilt PHP tarball from [shivammathur/php-ubuntu](https://github.com/shivammathur/php-ubuntu),
+built by [shivammathur/php-builder](https://github.com/shivammathur/php-builder), and `grpc.so`
+is inside it. The Provenance step shows the tarball, whether `grpc.so` was linked with
+`-z nodelete`, and the compiler flags recorded in its debug info from the matching `-dbgsym`
+tarball.
 
 A job fails if any run exits non-zero. A failed job then opens one of the core files in gdb and
-prints the faulting address, the loaded libraries and the thread backtraces. A core file is
-used because the crash did not happen in 20 runs under gdb.
+prints the faulting address, whether `grpc.so` is still loaded and the thread backtraces. A core
+file is used because the crash did not happen in 20 runs under gdb.
 
 ## Results
 
@@ -47,5 +51,18 @@ Every job had PHP 8.4.27 or 8.5.12 and ext-grpc 1.84.0. The `grpc.so` binaries a
 same, though. It is 16664912 bytes on `ubuntu-26.04` and 16128336 bytes on `ubuntu-24.04`, so
 the 26.04 runner gets a different build of the same version.
 
-Skipping `dlclose()` stops the crash, which fits the unload race described in
+Skipping `dlclose()` stops the crash.
+
+[Run 40633681019](https://github.com/brettmc/grpc-php-shutdown-segfault/actions/runs/40633681019/job/122635641154)
+crashed 18 times out of 20 on `ubuntu-26.04` with PHP 8.5, and kept every core file. In the one
+gdb opened:
+
+- the main thread is in `_dl_close()`, inside `munmap()`
+- `grpc.so` is no longer in the loaded libraries
+- the faulting thread's program counter is in no mapped library
+
+The core file names record the faulting thread. It was `event_engine` in 17 cores and
+`grpc_global_timer` in one. Both are ext-grpc threads.
+
+This fits the unload race described in
 [grpc/grpc#42242](https://github.com/grpc/grpc/issues/42242).

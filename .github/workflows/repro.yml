@@ -32,11 +32,28 @@ jobs:
         run: |
           php -v
           php --ri grpc
+          ls -l "$(php -r 'echo ini_get("extension_dir");')/grpc.so"
+
+      # setup-php unpacks a prebuilt PHP tarball from shivammathur/php-ubuntu,
+      # and grpc.so comes inside it, not from a package. The build strips
+      # .comment, but the matching -dbgsym tarball has the debug info, and
+      # DW_AT_producer there records the compiler and its flags.
+      - name: Provenance
+        continue-on-error: true
+        run: |
           so="$(php -r 'echo ini_get("extension_dir");')/grpc.so"
-          ls -l "$so"
-          dpkg -S "$so" || echo "grpc.so is not from a package"
-          readelf -p .comment "$so" || echo "no .comment section"
-          readelf -d "$so" | grep -i flags || echo "no FLAGS entries"
+          tarball=$(ls /tmp/php_*.tar.zst)
+          tar -I zstd -tvf "$tarball" | grep grpc.so
+          readelf -d "$so" | grep -i flags
+          id=$(readelf -n "$so" | awk '/Build ID/ { print $3 }')
+          echo "build id: $id"
+          dbgsym=$(basename "${tarball/-nts+/-nts-dbgsym+}")
+          curl -fsSL -o /tmp/dbgsym.tar.zst \
+            "https://github.com/shivammathur/php-ubuntu/releases/download/builds/$dbgsym"
+          mkdir /tmp/dbgsym
+          tar -I zstd -xf /tmp/dbgsym.tar.zst -C /tmp/dbgsym --wildcards "*/${id:0:2}/${id:2}.debug"
+          readelf --debug-dump=info "$(find /tmp/dbgsym -name "${id:2}.debug")" \
+            | grep -m 5 DW_AT_producer
 
       # %e is the name of the thread that faulted, so the core file names
       # alone show which thread crashes.
@@ -67,7 +84,6 @@ jobs:
           sudo apt-get install -y -qq gdb > /dev/null
           gdb -q -batch \
             -ex 'p $_siginfo._sifields._sigfault.si_addr' \
-            -ex 'info symbol $pc' \
-            -ex 'info sharedlibrary' \
+            -ex 'info sharedlibrary grpc' \
             -ex 'thread apply all bt 8' \
             "$(command -v php)" "$core"
