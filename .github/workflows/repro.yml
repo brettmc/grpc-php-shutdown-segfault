@@ -32,13 +32,23 @@ jobs:
         run: |
           php -v
           php --ri grpc
-          ls -l "$(php -r 'echo ini_get("extension_dir");')/grpc.so"
+          so="$(php -r 'echo ini_get("extension_dir");')/grpc.so"
+          ls -l "$so"
+          dpkg -S "$so" || echo "grpc.so is not from a package"
+          readelf -p .comment "$so" || echo "no .comment section"
+          readelf -d "$so" | grep -i flags || echo "no FLAGS entries"
+
+      # %e is the name of the thread that faulted, so the core file names
+      # alone show which thread crashes.
+      - name: Write core dumps to /tmp
+        run: sudo sysctl -w kernel.core_pattern='/tmp/core.%p.%e'
 
       # ZEND_DONT_UNLOAD_MODULES makes PHP skip dlclose() on extensions at
       # shutdown. If the crash goes away with it set, the unload is the cause.
       - name: Run ${{ env.RUNS }} times
         run: |
           [ "${{ matrix.unload }}" = "no" ] && export ZEND_DONT_UNLOAD_MODULES=1
+          ulimit -c unlimited
           crashes=0
           for i in $(seq "$RUNS"); do
             php repro.php > /dev/null && rc=0 || rc=$?
@@ -47,13 +57,17 @@ jobs:
           echo "crashes: $crashes/$RUNS" | tee -a "$GITHUB_STEP_SUMMARY"
           [ "$crashes" -eq 0 ]
 
+      # Running under gdb changes the timing enough to hide the race, so read
+      # a core from one of the crashes above instead.
       - name: Backtrace
         if: failure()
         run: |
+          ls /tmp/core.*
+          core=$(ls /tmp/core.* | head -n 1)
           sudo apt-get install -y -qq gdb > /dev/null
-          for i in $(seq "$RUNS"); do
-            gdb -q -batch -ex run -ex 'info symbol $pc' -ex 'thread apply all bt 8' \
-              --args php repro.php > gdb.log 2>&1
-            grep -q SIGSEGV gdb.log && break
-          done
-          cat gdb.log
+          gdb -q -batch \
+            -ex 'p $_siginfo._sifields._sigfault.si_addr' \
+            -ex 'info symbol $pc' \
+            -ex 'info sharedlibrary' \
+            -ex 'thread apply all bt 8' \
+            "$(command -v php)" "$core"

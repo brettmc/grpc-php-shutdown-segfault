@@ -24,9 +24,28 @@ workflow runs it 20 times in each combination of:
 - PHP: 8.4 and 8.5
 - unload: PHP's default, and `ZEND_DONT_UNLOAD_MODULES=1`, which skips `dlclose()`
 
-A job fails if any run exits non-zero. A failed job then runs the script under gdb and prints
-the faulting address and the thread backtraces.
+The Versions step shows where `grpc.so` came from: its package, the compiler that built it, and
+whether it was linked with `-z nodelete`.
+
+A job fails if any run exits non-zero. A failed job then opens one of the core files in gdb and
+prints the faulting address, the loaded libraries and the thread backtraces. A core file is
+used because the crash did not happen in 20 runs under gdb.
 
 ## Results
 
-TODO
+From [run 40630867554](https://github.com/brettmc/grpc-php-shutdown-segfault/actions/runs/40630867554),
+crashes out of 20 runs:
+
+| runner         | PHP | default unload | `ZEND_DONT_UNLOAD_MODULES=1` |
+|----------------|-----|----------------|------------------------------|
+| `ubuntu-24.04` | 8.4 | 0              | 0                            |
+| `ubuntu-24.04` | 8.5 | 0              | 0                            |
+| `ubuntu-26.04` | 8.4 | 0              | 0                            |
+| `ubuntu-26.04` | 8.5 | 16             | 0                            |
+
+Every job had PHP 8.4.27 or 8.5.12 and ext-grpc 1.84.0. The `grpc.so` binaries are not the
+same, though. It is 16664912 bytes on `ubuntu-26.04` and 16128336 bytes on `ubuntu-24.04`, so
+the 26.04 runner gets a different build of the same version.
+
+Skipping `dlclose()` stops the crash, which fits the unload race described in
+[grpc/grpc#42242](https://github.com/grpc/grpc/issues/42242).
