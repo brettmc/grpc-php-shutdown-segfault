@@ -1,0 +1,59 @@
+name: repro
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: ${{ matrix.os }} php ${{ matrix.php }} unload=${{ matrix.unload }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+        php: ['8.4', '8.5']
+        unload: ['yes', 'no']
+    env:
+      RUNS: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: grpc
+          coverage: none
+
+      - name: Versions
+        run: |
+          php -v
+          php --ri grpc
+          ls -l "$(php -r 'echo ini_get("extension_dir");')/grpc.so"
+
+      # ZEND_DONT_UNLOAD_MODULES makes PHP skip dlclose() on extensions at
+      # shutdown. If the crash goes away with it set, the unload is the cause.
+      - name: Run ${{ env.RUNS }} times
+        run: |
+          [ "${{ matrix.unload }}" = "no" ] && export ZEND_DONT_UNLOAD_MODULES=1
+          crashes=0
+          for i in $(seq "$RUNS"); do
+            php repro.php > /dev/null && rc=0 || rc=$?
+            [ "$rc" -ne 0 ] && crashes=$((crashes + 1)) && echo "run $i: exit $rc"
+          done
+          echo "crashes: $crashes/$RUNS" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$crashes" -eq 0 ]
+
+      - name: Backtrace
+        if: failure()
+        run: |
+          sudo apt-get install -y -qq gdb > /dev/null
+          for i in $(seq "$RUNS"); do
+            gdb -q -batch -ex run -ex 'info symbol $pc' -ex 'thread apply all bt 8' \
+              --args php repro.php > gdb.log 2>&1
+            grep -q SIGSEGV gdb.log && break
+          done
+          cat gdb.log
